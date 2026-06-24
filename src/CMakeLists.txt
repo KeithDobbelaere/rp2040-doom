@@ -469,19 +469,30 @@ if (TARGET chocolate-doom)
     )
 endif()
 
-function(add_doom_tiny SUFFIX RENDER_LIB)
+function(add_doom_tiny SUFFIX RENDER_LIB VIDEO_BACKEND_LIB)
     add_executable(doom_tiny${SUFFIX})
-    target_link_libraries(doom_tiny${SUFFIX} PRIVATE game)
+
+    target_link_libraries(doom_tiny${SUFFIX} PRIVATE
+            game
+            ${VIDEO_BACKEND_LIB}
+    )
 
     target_sources(doom_tiny${SUFFIX} PRIVATE
             tiny_huff.c
             musx_decoder.c
             image_decoder.c
             )
-    target_include_directories(doom_tiny${SUFFIX} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/../")
-    target_link_libraries(doom_tiny${SUFFIX} PRIVATE doom ${EXTRA_LIBS})
 
-    target_link_libraries(doom_tiny${SUFFIX} PRIVATE small_doom_common)
+    target_include_directories(doom_tiny${SUFFIX} PRIVATE
+            "${CMAKE_CURRENT_BINARY_DIR}/../"
+    )
+
+    target_link_libraries(doom_tiny${SUFFIX} PRIVATE
+            doom
+            ${EXTRA_LIBS}
+            small_doom_common
+            ${RENDER_LIB}
+    )
 
     if (PICO_SDK)
         pico_set_float_implementation(doom_tiny${SUFFIX} none)
@@ -490,7 +501,9 @@ function(add_doom_tiny SUFFIX RENDER_LIB)
     endif()
 
     target_compile_options(doom_tiny${SUFFIX} PRIVATE
-            -Wno-format-truncation)
+            -Wno-format-truncation
+    )
+
     target_compile_definitions(doom_tiny${SUFFIX} PRIVATE
         DOOM_TINY=1
         EMU8950_SLOT_RENDER=1
@@ -498,8 +511,7 @@ function(add_doom_tiny SUFFIX RENDER_LIB)
         SHRINK_MOBJ=1 # may break saved games
         NO_RDRAW=1
 
-        #NO_DRAW_MENU=1
-        # SDK minimilization
+        # SDK minimization
         PICO_TIME_DEFAULT_ALARM_POOL_DISABLED=1
         PICO_TIME_DEFAULT_ALARM_POOL_MAX_TIMERS=1
         PICO_DISABLE_SHARED_IRQ_HANDLERS=1
@@ -511,13 +523,12 @@ function(add_doom_tiny SUFFIX RENDER_LIB)
 
         NO_USE_NET=1 # standard networking
         USE_PICO_NET=1
-        # for vgaboard
+
+        # for vgaboard / legacy defaults
         PICO_DEFAULT_I2C=1
         PICO_DEFAULT_I2C_SDA_PIN=18
         PICO_DEFAULT_I2C_SCL_PIN=19
 
-        #NO_USE_LOAD=1
-        #NO_USE_SAVE=1
         $<$<BOOL:${PICO_ON_DEVICE}>:NO_FILE_ACCESS=1>
 
         SAVE_COMPRESSED=1
@@ -529,39 +540,25 @@ function(add_doom_tiny SUFFIX RENDER_LIB)
 
         USE_VANILLA_KEYBOARD_MAPPING_ONLY=1
 
-        #FORCE_NODRAW=1
-
         NO_USE_LOADING_DISK=1
-
-        # -- these aren't used any more, we adapt based on DOOM_TINY
-        #NO_USE_ST=1 # for now skip all the status crap
-        #NO_USE_DEFAULT_ST_LIB=1
-
-        #NO_PAGE_DRAWER=1 # splash screens
-        #NO_HU_DRAWER=1
 
         USE_WHD=1
 
-
-        NO_Z_MALLOC_USER_PTR=1 # onyl needed for freeing textures i think
+        NO_Z_MALLOC_USER_PTR=1 # only needed for freeing textures, I think
 
         FIXED_SCREENWIDTH=1
         FLOOR_CEILING_CLIP_8BIT=1
 
-#        NO_USE_WI=1
         USE_MUSX=1
         MUSX_COMPRESSED=1
 
         NO_SCREENSHOT=1
-
         NO_USE_BOUND_CONFIG=1
 
         USE_FPS=1
-
-#        PICO_DOOM_INFO=1
     )
+
     target_compile_definitions(doom_tiny${SUFFIX} PRIVATE
-        #FORCE_NODRAW=1
         USE_MEMORY_WAD=1
         PICO_DEBUG_MALLOC=1
         EMU8950_NO_RATECONV=1
@@ -570,25 +567,32 @@ function(add_doom_tiny SUFFIX RENDER_LIB)
 
         NO_IERROR=1
     )
+
     if (PICO_ON_DEVICE)
-        target_compile_options(doom_tiny${SUFFIX} PRIVATE -fno-common -fdata-sections -Wl,--sort-section=alignment)
+        target_compile_options(doom_tiny${SUFFIX} PRIVATE
+                -fno-common
+                -fdata-sections
+                -Wl,--sort-section=alignment
+        )
+
         target_compile_definitions(doom_tiny${SUFFIX} PRIVATE
                 NO_ZONE_DEBUG=1
-                )
-        #target_link_libraries(doom_tiny${SUFFIX} PRIVATE hardware_flash)
+        )
     endif()
+
     if (FORCE_DEBUG)
         target_compile_options(doom_tiny${SUFFIX} PRIVATE -g)
     endif()
-    target_link_libraries(doom_tiny${SUFFIX} PRIVATE ${RENDER_LIB})
+
     set(PICO_HACK 0)
     set(STAMP_HACK 0)
+
     if (PICO_HACK)
         target_compile_definitions(doom_tiny${SUFFIX} PRIVATE
                 PICO_AUDIO_I2S_DATA_PIN=20
                 PICO_AUDIO_I2S_CLOCK_PIN_BASE=21
                 NO_USE_UART=1
-                )
+        )
         pico_enable_stdio_uart(doom_tiny${SUFFIX} 0)
     elseif(STAMP_HACK)
         target_compile_definitions(doom_tiny${SUFFIX} PRIVATE
@@ -627,7 +631,8 @@ else()
 endif()
 
 if (PICO_SDK)
-    add_doom_tiny("" render_newhope)
+    add_doom_tiny("" render_newhope common_pico_vga)
+
     add_library(tiny_settings INTERFACE)
     target_compile_definitions(tiny_settings INTERFACE
             WHD_SUPER_TINY=1
@@ -635,31 +640,42 @@ if (PICO_SDK)
             NO_USE_FINALE_CAST=1
             NO_USE_FINALE_BUNNY=1
     )
+
     target_compile_definitions(doom_tiny PRIVATE
             TINY_WAD_ADDR=0x10040000
     )
     target_link_libraries(doom_tiny PRIVATE tiny_settings)
-    add_doom_tiny(_nost render_newhope)
+
+    add_doom_tiny(_nost render_newhope common_pico_vga)
 
     target_compile_definitions(doom_tiny_nost PRIVATE
             # NO_USE_FINALE_CAST=1 # note this is only used by doom II but doesnt take that much more space
             TINY_WAD_ADDR=0x10048000
-            )
+    )
+
     if (PICO_ON_DEVICE)
         suppress_tinyusb_warnings()
-        add_doom_tiny(_usb render_newhope)
+
+        add_doom_tiny(_usb render_newhope common_pico_vga)
         target_link_libraries(doom_tiny_usb PRIVATE tiny_settings pico_cd)
         target_compile_definitions(doom_tiny_usb PRIVATE
                 USB_SUPPORT=1
                 TINY_WAD_ADDR=0x10042000 # ugh tinyusb is >8K currently!!
         )
-        add_doom_tiny(_nost_usb render_newhope)
+
+        add_doom_tiny(_nost_usb render_newhope common_pico_vga)
         target_link_libraries(doom_tiny_nost_usb PRIVATE pico_cd)
         target_compile_definitions(doom_tiny_nost_usb PRIVATE
                 USB_SUPPORT=1
                 TINY_WAD_ADDR=0x10048000
-                )
+        )
     endif()
+
+    add_doom_tiny(_picocalc render_newhope common_pico_picocalc)
+    target_link_libraries(doom_tiny_picocalc PRIVATE tiny_settings)
+    target_compile_definitions(doom_tiny_picocalc PRIVATE
+            TINY_WAD_ADDR=0x10042000
+    )
 endif()
 
 

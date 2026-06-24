@@ -1,0 +1,29 @@
+{
+  "terminal.integrated.profiles.windows": {
+    "MSYS2 UCRT64": {
+      "path": "C:\\msys64\\usr\\bin\\bash.exe",
+      "args": ["--login", "-i"],
+      "env": {
+        "MSYSTEM": "UCRT64",
+        "CHERE_INVOKING": "1"
+      }
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "MSYS2 UCRT64",
+
+  "cmake.cmakePath": "C:\\msys64\\ucrt64\\bin\\cmake.exe",
+  "cmake.generator": "Ninja",
+  "cmake.configureOnOpen": false,
+  "cmake.buildDirectory": "${workspaceFolder}/build-rp",
+
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build-rp/compile_commands.json",
+  "C_Cpp.default.intelliSenseMode": "gcc-arm",
+  "C_Cpp.default.compilerPath": "C:\\Users\\KEITH\\.pico-sdk\\toolchain\\14_2_Rel1\\bin\\arm-none-eabi-gcc.exe",
+
+  "files.associations": {
+    "*.h": "c",
+    "*.c": "c",
+    "*.cpp": "cpp",
+    "CMakeLists.txt": "cmake"
+  }
+}

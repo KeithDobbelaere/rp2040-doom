@@ -204,7 +204,7 @@ void V_DrawPatchList(const vpatchlist_t *patchlist) {
         int h0 = vpatch_height(patch);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
-        int skip_top;
+        int skip_top = 0;
 #pragma GCC diagnostic pop
         int type = vpatch_type(patch);
         if (patchlist[l].entry.y + h0 > vpatch_clip_bottom) {

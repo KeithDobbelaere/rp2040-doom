@@ -1,0 +1,42 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Configure: stock RP2040 doom_tiny_usb",
+      "type": "shell",
+      "command": "cmake -S . -B build-rp -G Ninja -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPICO_BOARD=vgaboard -DPICO_SDK_PATH=C:/Users/KEITH/source/repos/embedded/pico-sdk-2.1.1 -DPICO_EXTRAS_PATH=C:/Users/KEITH/source/repos/embedded/pico-extras -DPICO_TOOLCHAIN_PATH=C:/Users/KEITH/.pico-sdk/toolchain/14_2_Rel1",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Build: doom_tiny_usb",
+      "type": "shell",
+      "command": "cmake --build build-rp --target doom_tiny_usb",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Build: whd_gen",
+      "type": "shell",
+      "command": "cmake --build build-gcc --target whd_gen",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Find WHX/WHD",
+      "type": "shell",
+      "command": "find . -iname \"*.whx\" -o -iname \"*.whd\"",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
