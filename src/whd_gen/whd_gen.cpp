@@ -1837,7 +1837,6 @@ for(int y=0;y<ph.height-1;y++) {
     for (int col = 0; col < ph.width; col++) {
         uint32_t col_offset = *(uint32_t *) (patch.data.data() + 8 + col * 4);
         const uint8_t *post = patch.data.data() + col_offset;
-        int post_count = 0;
         int last = 0;
         orig_meta_size++;
         while (post[0] != 0xff) {
@@ -1847,7 +1846,6 @@ for(int y=0;y<ph.height-1;y++) {
             orig_meta_size+=2;
 
             post += 4 + post[1];
-            post_count++;
         }
         if (last != ph.height) {
             assert( last < ph.height);

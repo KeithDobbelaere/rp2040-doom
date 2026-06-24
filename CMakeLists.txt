@@ -10,7 +10,11 @@ endif()
 
 project("Chocolate Doom" VERSION 3.0.0 LANGUAGES C CXX)
 enable_language(CXX)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 20)
+
+if(MSVC)
+    add_compile_options(/FS)
+endif()
 
 if (PICO_SDK_PATH)
     # we are using git@github.com:liamfraser/tinyusb.git as it has some RP2040 fixes that aren't upstreamed yet
@@ -24,7 +28,7 @@ if (PICO_SDK_PATH)
     endif()
 endif()
 
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD 17)
 
 # Autotools variables
 set(top_srcdir ${CMAKE_CURRENT_SOURCE_DIR})

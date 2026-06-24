@@ -6,10 +6,17 @@
 #if !USE_WHD
 typedef char textureorflatname_def_t[9];
 typedef const char* textureorflatname_t;
-#define TEXTURE_NAME(x) __STRING(x)
+#ifndef WHD_STRINGIZE_IMPL
+#define WHD_STRINGIZE_IMPL(x) #x
+#endif
+
+#ifndef WHD_STRINGIZE
+#define WHD_STRINGIZE(x) WHD_STRINGIZE_IMPL(x)
+#endif
+#define TEXTURE_NAME(x) WHD_STRINGIZE(x)
 #define TEXTURE_NAME_NONE ""
-#define FLAT_NAME(x) __STRING(x)
-#define VPATCH_NAME(x) __STRING(x)
+#define FLAT_NAME(x) WHD_STRINGIZE(x)
+#define VPATCH_NAME(x) WHD_STRINGIZE(x)
 #define VPATCH_NAME_INVALID ""
 #define DEH_VPATCH_NAME(x) DEH_String(VPATCH_NAME(x))
 typedef const char *vpatchname_t;

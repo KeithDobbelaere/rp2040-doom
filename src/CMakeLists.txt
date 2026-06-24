@@ -566,7 +566,7 @@ function(add_doom_tiny SUFFIX RENDER_LIB)
         PICO_DEBUG_MALLOC=1
         EMU8950_NO_RATECONV=1
 
-        PICO_CORE1_STACK_SIZE=0x4f8
+        PICO_CORE1_STACK_SIZE=0x480
 
         NO_IERROR=1
     )
