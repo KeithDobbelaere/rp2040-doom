@@ -512,7 +512,6 @@ function(add_doom_tiny SUFFIX RENDER_LIB VIDEO_BACKEND_LIB)
         NO_RDRAW=1
 
         # SDK minimization
-        PICO_TIME_DEFAULT_ALARM_POOL_DISABLED=1
         PICO_TIME_DEFAULT_ALARM_POOL_MAX_TIMERS=1
         PICO_DISABLE_SHARED_IRQ_HANDLERS=1
         PICO_USE_OPTIMISTIC_SBRK=1
@@ -603,6 +602,12 @@ function(add_doom_tiny SUFFIX RENDER_LIB VIDEO_BACKEND_LIB)
         )
         pico_enable_stdio_uart(doom_tiny${SUFFIX} 0)
     endif()
+
+    if (NOT "${SUFFIX}" STREQUAL "_picocalc")
+        target_compile_definitions(doom_tiny${SUFFIX} PRIVATE
+                PICO_TIME_DEFAULT_ALARM_POOL_DISABLED=1
+        )
+    endif()
 endfunction()
 
 add_subdirectory(whd_gen)
@@ -672,10 +677,23 @@ if (PICO_SDK)
     endif()
 
     add_doom_tiny(_picocalc render_newhope common_pico_picocalc)
+
     target_link_libraries(doom_tiny_picocalc PRIVATE tiny_settings)
+
     target_compile_definitions(doom_tiny_picocalc PRIVATE
             TINY_WAD_ADDR=0x10042000
+
+            # PicoCalc USB-C is CH340 -> Pico UART0.
+            PICO_DEFAULT_UART=0
+            PICO_DEFAULT_UART_TX_PIN=0
+            PICO_DEFAULT_UART_RX_PIN=1
+            PICO_DEFAULT_UART_BAUD_RATE=115200
     )
+
+    if (PICO_ON_DEVICE)
+        pico_enable_stdio_usb(doom_tiny_picocalc 0)
+        pico_enable_stdio_uart(doom_tiny_picocalc 1)
+    endif()
 endif()
 
 

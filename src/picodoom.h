@@ -21,6 +21,7 @@ typedef enum {
 extern volatile uint8_t interp_in_use;
 void pd_init();
 void pd_core1_loop();
+int pd_core1_loop_timeout_ms(uint32_t timeout_ms);
 void pd_begin_frame();
 void pd_add_column(pd_column_type type);
 void pd_add_masked_columns(uint8_t *ys, int seg_count);

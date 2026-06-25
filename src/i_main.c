@@ -32,6 +32,7 @@
 #if PICO_ON_DEVICE
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
+#include "hardware/uart.h"
 #endif
 #endif
 #if USE_PICO_NET
@@ -90,6 +91,17 @@ int main(int argc, char **argv)
 #endif
 #if LIB_PICO_STDIO
     stdio_init_all();
+
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+    sleep_ms(5000);
+
+    uart_init(uart0, 115200);
+    uart_set_format(uart0, 8, 1, UART_PARITY_NONE);
+    uart_set_fifo_enabled(uart0, false);
+
+    printf("picocalc: stdio alive\r\n");
+#endif
+
 #endif
 #if PICO_BUILD
     I_Init();

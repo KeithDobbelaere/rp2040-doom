@@ -19,7 +19,9 @@
 
 #if PICO_VIDEO_BACKEND_PICOCALC
 
+#include <stdbool.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "pico.h"
 #include "pico/sem.h"
@@ -33,6 +35,10 @@
 #include "i_video.h"
 #include "i_input.h"
 #include "picodoom.h"
+#include "tables.h"
+#include "w_wad.h"
+#include "z_zone.h"
+
 #include "picocalc_display.h"
 
 static boolean initialized = false;
@@ -67,23 +73,223 @@ int16_t *wipe_yoffsets_raw;
 uint8_t *wipe_yoffsets;
 uint32_t *wipe_linelookup;
 
+static uint8_t display_video_type;
+static uint8_t display_frame_index;
+static uint8_t display_overlay_index;
+
+static int next_pal = 0;
+static bool palette_ready = false;
+static uint16_t palette565[256];
+static uint16_t row565[SCREENWIDTH];
+
+static inline uint16_t rgb565_from_rgb888(int r, int g, int b)
+{
+    return (uint16_t)(((r & 0xf8) << 8) |
+                      ((g & 0xfc) << 3) |
+                      ((b & 0xf8) >> 3));
+}
+
+static void update_palette_if_needed(void)
+{
+    if (palette_ready && next_pal < 0) {
+        return;
+    }
+
+    int pal_num = next_pal < 0 ? 0 : next_pal;
+
+    static const uint8_t *playpal;
+    static bool calculate_palettes;
+
+    if (!playpal) {
+        lumpindex_t lump = W_GetNumForName("PLAYPAL");
+        playpal = (const uint8_t *)W_CacheLumpNum(lump, PU_STATIC);
+        calculate_palettes = W_LumpLength(lump) == 768;
+    }
+
+    if (!playpal) {
+        return;
+    }
+
+    if (!calculate_palettes || pal_num == 0) {
+        const uint8_t *doompalette = playpal;
+
+        if (!calculate_palettes) {
+            doompalette += pal_num * 768;
+        }
+
+        for (int i = 0; i < 256; i++) {
+            int r = *doompalette++;
+            int g = *doompalette++;
+            int b = *doompalette++;
+
+            if (usegamma) {
+                r = gammatable[usegamma - 1][r];
+                g = gammatable[usegamma - 1][g];
+                b = gammatable[usegamma - 1][b];
+            }
+
+            palette565[i] = rgb565_from_rgb888(r, g, b);
+        }
+    } else {
+        int mul;
+        int r0;
+        int g0;
+        int b0;
+
+        if (pal_num < 9) {
+            mul = pal_num * 65536 / 9;
+            r0 = 255;
+            g0 = 0;
+            b0 = 0;
+        } else if (pal_num < 13) {
+            mul = (pal_num - 8) * 65536 / 8;
+            r0 = 215;
+            g0 = 186;
+            b0 = 69;
+        } else {
+            mul = 65536 / 8;
+            r0 = 0;
+            g0 = 256;
+            b0 = 0;
+        }
+
+        const uint8_t *doompalette = playpal;
+
+        for (int i = 0; i < 256; i++) {
+            int r = *doompalette++;
+            int g = *doompalette++;
+            int b = *doompalette++;
+
+            r += ((r0 - r) * mul) >> 16;
+            g += ((g0 - g) * mul) >> 16;
+            b += ((b0 - b) * mul) >> 16;
+
+            if (usegamma) {
+                r = gammatable[usegamma - 1][r];
+                g = gammatable[usegamma - 1][g];
+                b = gammatable[usegamma - 1][b];
+            }
+
+            palette565[i] = rgb565_from_rgb888(r, g, b);
+        }
+    }
+
+    next_pal = -1;
+    palette_ready = true;
+}
+
+static const uint8_t *row_source_for_display(int y)
+{
+    switch (display_video_type) {
+        case VIDEO_TYPE_SINGLE:
+        case VIDEO_TYPE_SAVING:
+        case VIDEO_TYPE_WIPE:
+            if (y < MAIN_VIEWHEIGHT) {
+                return frame_buffer[display_frame_index] + y * SCREENWIDTH;
+            } else {
+                return frame_buffer[display_frame_index ^ 1] + (y - 32) * SCREENWIDTH;
+            }
+
+        case VIDEO_TYPE_DOUBLE:
+            if (y < MAIN_VIEWHEIGHT) {
+                return frame_buffer[display_frame_index] + y * SCREENWIDTH;
+            } else {
+                // Status bar/menus are still overlays in the VGA path.
+                // We are intentionally not drawing overlays in this first LCD test.
+                return NULL;
+            }
+
+        default:
+            return NULL;
+    }
+}
+
+static void present_display_frame(void)
+{
+    static uint32_t frames_presented = 0;
+
+    update_palette_if_needed();
+
+    picocalc_display_begin_frame();
+
+    for (int y = 0; y < SCREENHEIGHT; y++) {
+        const uint8_t *src = row_source_for_display(y);
+
+        if (src) {
+            for (int x = 0; x < SCREENWIDTH; x++) {
+                row565[x] = palette565[src[x]];
+            }
+        } else {
+            memset(row565, 0, sizeof(row565));
+        }
+
+        picocalc_display_write_doom_row(y, row565);
+    }
+
+    picocalc_display_end_frame();
+
+    frames_presented++;
+    if ((frames_presented & 31u) == 0) {
+        printf("picocalc: presented %lu frames type=%u frame=%u\r\n",
+               (unsigned long)frames_presented,
+               display_video_type,
+               display_frame_index);
+    }
+}
+
+static bool consume_render_frame_if_ready(void)
+{
+    if (!sem_available(&render_frame_ready)) {
+        return false;
+    }
+
+    sem_acquire_blocking(&render_frame_ready);
+
+    display_video_type = next_video_type;
+    display_frame_index = next_frame_index;
+    display_overlay_index = next_overlay_index;
+    (void)display_overlay_index;
+
+    static uint32_t frames_presented = 0;
+
+    if (frames_presented == 0) {
+        printf("picocalc: first render frame ready type=%u frame=%u\r\n",
+               display_video_type,
+               display_frame_index);
+    }
+
+    present_display_frame();
+
+    frames_presented++;
+
+    if ((frames_presented & 31u) == 0) {
+        printf("picocalc: presented %lu frames type=%u frame=%u\r\n",
+               (unsigned long)frames_presented,
+               display_video_type,
+               display_frame_index);
+    }
+
+    sem_release(&display_frame_freed);
+
+    return true;
+}
+
 static void core1(void)
 {
+    printf("picocalc: core1 start\r\n");
+
     picocalc_display_init();
+
+    printf("picocalc: display init returned\r\n");
 
     sem_release(&core1_launch);
 
     while (true) {
-        pd_core1_loop();
-
-        if (sem_available(&render_frame_ready)) {
-            sem_acquire_blocking(&render_frame_ready);
-
-            // Temporary compile/flow stub:
-            // consume the produced frame immediately so pd_render.cpp
-            // does not block waiting for display ownership to return.
-            sem_release(&display_frame_freed);
+        if (!consume_render_frame_if_ready()) {
+            pd_core1_loop_timeout_ms(1);
         }
+
+        consume_render_frame_if_ready();
 
         tight_loop_contents();
     }
@@ -91,6 +297,8 @@ static void core1(void)
 
 void I_InitGraphics(void)
 {
+    printf("picocalc: I_InitGraphics\r\n");
+
     I_VideoBuffer = frame_buffer[0];
 
     sem_init(&render_frame_ready, 0, 2);
@@ -124,7 +332,7 @@ void I_SetWindowTitle(const char *title)
 
 void I_SetPaletteNum(int doompalette)
 {
-    (void)doompalette;
+    next_pal = doompalette;
 }
 
 void I_FinishUpdate(void)
@@ -150,8 +358,18 @@ void I_UpdateNoBlit(void)
 
 void I_ReadScreen(pixel_t *scr)
 {
-    if (scr && I_VideoBuffer) {
-        memcpy(scr, I_VideoBuffer, SCREENWIDTH * SCREENHEIGHT * sizeof(*scr));
+    if (!scr) {
+        return;
+    }
+
+    for (int y = 0; y < SCREENHEIGHT; y++) {
+        const uint8_t *src = row_source_for_display(y);
+
+        if (src) {
+            memcpy(scr + y * SCREENWIDTH, src, SCREENWIDTH);
+        } else {
+            memset(scr + y * SCREENWIDTH, 0, SCREENWIDTH);
+        }
     }
 }
 

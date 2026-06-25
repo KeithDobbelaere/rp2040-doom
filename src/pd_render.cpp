@@ -2962,28 +2962,54 @@ void pd_end_frame(int wipe_start) {
     DEBUG_PINS_CLR(start_end, 2);
 }
 
-void pd_core1_loop() {
+static void pd_core1_loop_after_wake()
+{
 #if PICO_ON_DEVICE
-    sem_acquire_blocking(&core1_wake);
 #if USE_CORE1_FOR_FLATS
     while (!sem_acquire_timeout_ms(&core1_do_flats, 1)) {
         SafeUpdateSound();
     }
+
     interp_in_use = true;
     draw_visplanes(core1_fr_list);
     interp_in_use = false;
+
 #if USE_CORE1_FOR_REGULAR
     while (!sem_acquire_timeout_ms(&core1_do_regular, 1)) {
         SafeUpdateSound();
     }
+
     draw_regular_columns(1);
 #endif
 #endif
+
     while (!sem_acquire_timeout_ms(&core0_done, 1)) {
         SafeUpdateSound();
     }
 #endif
+
     sem_release(&core1_done);
+}
+
+void pd_core1_loop()
+{
+#if PICO_ON_DEVICE
+    sem_acquire_blocking(&core1_wake);
+#endif
+
+    pd_core1_loop_after_wake();
+}
+
+int pd_core1_loop_timeout_ms(uint32_t timeout_ms)
+{
+#if PICO_ON_DEVICE
+    if (!sem_acquire_timeout_ms(&core1_wake, timeout_ms)) {
+        return 0;
+    }
+#endif
+
+    pd_core1_loop_after_wake();
+    return 1;
 }
 
 #if PICO_ON_DEVICE
