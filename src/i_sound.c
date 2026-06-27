@@ -268,6 +268,13 @@ void I_InitSound(boolean use_sfx_prefix)
 
     nomusic = M_CheckParm("-nomusic") > 0;
 
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC && PICOCALC_DISABLE_AUDIO
+    nosound = true;
+    nosfx = true;
+    nomusic = true;
+    printf("picocalc: audio disabled\r\n");
+#endif
+
 #if !NO_USE_MUSIC_PACKS
     //!
     //

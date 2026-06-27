@@ -512,6 +512,11 @@ void D_RunFrame()
 #else
         do {
             D_Display();
+
+#if PICO_VIDEO_BACKEND_PICOCALC
+            I_FinishUpdate();
+#endif
+
         } while (wipestate);
 #endif
     }
@@ -1887,6 +1892,11 @@ void D_DoomMain (void)
     startepisode = 1;
     startmap = 1;
     autostart = false;
+
+    #if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+        autostart = true;
+        printf("picocalc: autostart E%dM%d\r\n", startepisode, startmap);
+    #endif
 
     //!
     // @category game

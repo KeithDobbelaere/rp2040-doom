@@ -26,6 +26,7 @@
 #include "pico.h"
 #include "pico/sem.h"
 #include "pico/multicore.h"
+#include "pico/time.h"
 
 #if PICO_RP2350
 #include "hardware/structs/accessctrl.h"
@@ -38,6 +39,9 @@
 #include "tables.h"
 #include "w_wad.h"
 #include "z_zone.h"
+#include "doom/r_data.h"
+#include "v_video.h"
+#include "v_patch.h"
 
 #include "picocalc_display.h"
 
@@ -80,7 +84,7 @@ static uint8_t display_overlay_index;
 static int next_pal = 0;
 static bool palette_ready = false;
 static uint16_t palette565[256];
-static uint16_t row565[SCREENWIDTH];
+static uint16_t shared_palette565[NUM_SHARED_PALETTES][16];
 
 static inline uint16_t rgb565_from_rgb888(int r, int g, int b)
 {
@@ -174,8 +178,388 @@ static void update_palette_if_needed(void)
         }
     }
 
+    for (int i = 0; i < NUM_SHARED_PALETTES; i++) {
+        const patch_t *patch = resolve_vpatch_handle(vpatch_for_shared_palette[i]);
+        const uint8_t *pal = vpatch_palette(patch);
+        int count = vpatch_colorcount(patch);
+
+        for (int j = 0; j < 16; j++) {
+            shared_palette565[i][j] = j < count ? palette565[pal[j]] : 0;
+        }
+    }
+
     next_pal = -1;
     palette_ready = true;
+}
+
+static inline uint draw_vpatch_row_rgb565(uint16_t *dest,
+                                          const patch_t *patch,
+                                          const vpatchlist_t *vp,
+                                          uint off)
+{
+    int repeat = vp->entry.repeat;
+    int x = vp->entry.x;
+    int w = vpatch_width(patch);
+
+    if (x >= SCREENWIDTH) {
+        return off;
+    }
+
+    if (x + w > SCREENWIDTH) {
+        w = SCREENWIDTH - x;
+    }
+
+    dest += x;
+
+    const uint8_t *data0 = vpatch_data(patch);
+    const uint8_t *data = data0 + off;
+
+    if (!vpatch_has_shared_palette(patch)) {
+        const uint8_t *pal = vpatch_palette(patch);
+
+        switch (vpatch_type(patch)) {
+            case vp4_runs: {
+                uint16_t *p = dest;
+                uint16_t *pend = dest + w;
+                uint8_t gap;
+
+                while (0xff != (gap = *data++)) {
+                    p += gap;
+                    int len = *data++;
+
+                    for (int i = 1; i < len; i += 2) {
+                        uint v = *data++;
+                        if (p < pend) {
+                            *p++ = palette565[pal[v & 0x0f]];
+                        }
+                        if (p < pend) {
+                            *p++ = palette565[pal[v >> 4]];
+                        }
+                    }
+
+                    if (len & 1) {
+                        uint v = *data++;
+                        if (p < pend) {
+                            *p++ = palette565[pal[v & 0x0f]];
+                        }
+                    }
+
+                    if (p >= pend) {
+                        break;
+                    }
+                }
+
+                break;
+            }
+
+            case vp4_alpha: {
+                uint16_t *p = dest;
+
+                for (int i = 0; i < w / 2; i++) {
+                    uint v = *data++;
+
+                    if (v & 0x0f) {
+                        p[0] = palette565[pal[v & 0x0f]];
+                    }
+
+                    if (v >> 4) {
+                        p[1] = palette565[pal[v >> 4]];
+                    }
+
+                    p += 2;
+                }
+
+                if (w & 1) {
+                    uint v = *data++;
+
+                    if (v & 0x0f) {
+                        p[0] = palette565[pal[v & 0x0f]];
+                    }
+                }
+
+                break;
+            }
+
+            case vp4_solid: {
+                uint16_t *p = dest;
+
+                for (int i = 0; i < w / 2; i++) {
+                    uint v = *data++;
+                    p[0] = palette565[pal[v & 0x0f]];
+                    p[1] = palette565[pal[v >> 4]];
+                    p += 2;
+                }
+
+                if (w & 1) {
+                    uint v = *data++;
+                    p[0] = palette565[pal[v & 0x0f]];
+                }
+
+                break;
+            }
+
+            case vp6_runs: {
+                uint16_t *p = dest;
+                uint16_t *pend = dest + w;
+                uint8_t gap;
+
+                while (0xff != (gap = *data++)) {
+                    p += gap;
+                    int len = *data++;
+
+                    for (int i = 3; i < len; i += 4) {
+                        uint v = *data++;
+                        v |= (*data++) << 8;
+                        v |= (*data++) << 16;
+
+                        if (p < pend) {
+                            *p++ = palette565[pal[v & 0x3f]];
+                        }
+
+                        if (p < pend) {
+                            *p++ = palette565[pal[(v >> 6) & 0x3f]];
+                        }
+
+                        if (p < pend) {
+                            *p++ = palette565[pal[(v >> 12) & 0x3f]];
+                        }
+
+                        if (p < pend) {
+                            *p++ = palette565[pal[(v >> 18) & 0x3f]];
+                        }
+                    }
+
+                    len &= 3;
+
+                    if (len--) {
+                        uint v = *data++;
+
+                        if (p < pend) {
+                            *p++ = palette565[pal[v & 0x3f]];
+                        }
+
+                        if (len--) {
+                            v >>= 6;
+                            v |= (*data++) << 2;
+
+                            if (p < pend) {
+                                *p++ = palette565[pal[v & 0x3f]];
+                            }
+
+                            if (len--) {
+                                v >>= 6;
+                                v |= (*data++) << 4;
+
+                                if (p < pend) {
+                                    *p++ = palette565[pal[v & 0x3f]];
+                                }
+                            }
+                        }
+                    }
+
+                    if (p >= pend) {
+                        break;
+                    }
+                }
+
+                break;
+            }
+
+            case vp8_runs: {
+                uint16_t *p = dest;
+                uint16_t *pend = dest + w;
+                uint8_t gap;
+
+                while (0xff != (gap = *data++)) {
+                    p += gap;
+                    int len = *data++;
+
+                    for (int i = 0; i < len; i++) {
+                        uint v = *data++;
+
+                        if (p < pend) {
+                            *p++ = palette565[pal[v]];
+                        }
+                    }
+
+                    if (p >= pend) {
+                        break;
+                    }
+                }
+
+                break;
+            }
+
+            case vp_border: {
+                if (w > 0) {
+                    dest[0] = palette565[*data++];
+                }
+
+                uint16_t col = palette565[*data++];
+
+                for (int i = 1; i < w - 1; i++) {
+                    dest[i] = col;
+                }
+
+                if (w > 1) {
+                    dest[w - 1] = palette565[*data++];
+                }
+
+                break;
+            }
+
+            default:
+                break;
+        }
+    } else {
+        uint sp = vpatch_shared_palette(patch);
+
+        if (sp >= NUM_SHARED_PALETTES) {
+            return data - data0;
+        }
+
+        uint16_t *pal16 = shared_palette565[sp];
+
+        switch (vpatch_type(patch)) {
+            case vp4_solid: {
+                uint16_t *p = dest;
+
+                for (int i = 0; i < w / 2; i++) {
+                    uint v = *data++;
+                    p[0] = pal16[v & 0x0f];
+                    p[1] = pal16[v >> 4];
+                    p += 2;
+                }
+
+                if (w & 1) {
+                    uint v = *data++;
+                    p[0] = pal16[v & 0x0f];
+                }
+
+                break;
+            }
+
+            case vp4_alpha: {
+                uint16_t *p = dest;
+
+                for (int i = 0; i < w / 2; i++) {
+                    uint v = *data++;
+
+                    if (v & 0x0f) {
+                        p[0] = pal16[v & 0x0f];
+                    }
+
+                    if (v >> 4) {
+                        p[1] = pal16[v >> 4];
+                    }
+
+                    p += 2;
+                }
+
+                if (w & 1) {
+                    uint v = *data++;
+
+                    if (v & 0x0f) {
+                        p[0] = pal16[v & 0x0f];
+                    }
+                }
+
+                break;
+            }
+
+            default:
+                break;
+        }
+    }
+
+    if (repeat) {
+        if (vp->entry.patch_handle == VPATCH_M_THERMM) {
+            w--;
+        }
+
+        for (int i = 0; i < repeat * w && x + w + i < SCREENWIDTH; i++) {
+            dest[w + i] = dest[i];
+        }
+    }
+
+    return data - data0;
+}
+
+static void prepare_overlays_for_display_frame(void)
+{
+    if (display_video_type < FIRST_VIDEO_TYPE_WITH_OVERLAYS || !vpatchlists) {
+        return;
+    }
+
+    memset(vpatchlists->vpatch_next, 0, sizeof(vpatchlists->vpatch_next));
+    memset(vpatchlists->vpatch_starters, 0, sizeof(vpatchlists->vpatch_starters));
+    memset(vpatchlists->vpatch_doff, 0, sizeof(vpatchlists->vpatch_doff));
+
+    vpatchlist_t *overlays = vpatchlists->overlays[display_overlay_index];
+
+    for (int i = overlays->header.size - 1; i > 0; i--) {
+        int y = overlays[i].entry.y;
+
+        if (y >= 0 && y < SCREENHEIGHT) {
+            vpatchlists->vpatch_next[i] = vpatchlists->vpatch_starters[y];
+            vpatchlists->vpatch_starters[y] = i;
+        }
+    }
+}
+
+static void draw_overlays_on_row(uint16_t *dest, int y)
+{
+    if (!dest) {
+        return;
+    }
+    if (display_video_type < FIRST_VIDEO_TYPE_WITH_OVERLAYS || !vpatchlists) {
+        return;
+    }
+
+    if (y < 0 || y >= SCREENHEIGHT) {
+        return;
+    }
+
+    int prev = 0;
+
+    for (int vp = vpatchlists->vpatch_starters[y]; vp;) {
+        int next = vpatchlists->vpatch_next[vp];
+
+        while (vpatchlists->vpatch_next[prev] &&
+               vpatchlists->vpatch_next[prev] < vp) {
+            prev = vpatchlists->vpatch_next[prev];
+        }
+
+        vpatchlists->vpatch_next[vp] = vpatchlists->vpatch_next[prev];
+        vpatchlists->vpatch_next[prev] = vp;
+
+        prev = vp;
+        vp = next;
+    }
+
+    vpatchlist_t *overlays = vpatchlists->overlays[display_overlay_index];
+
+    prev = 0;
+
+    for (int vp = vpatchlists->vpatch_next[prev];
+         vp;
+         vp = vpatchlists->vpatch_next[prev]) {
+
+        const patch_t *patch = resolve_vpatch_handle(overlays[vp].entry.patch_handle);
+        int yoff = y - overlays[vp].entry.y;
+
+        if (yoff < vpatch_height(patch)) {
+            vpatchlists->vpatch_doff[vp] =
+                    draw_vpatch_row_rgb565(dest,
+                       patch,
+                       &overlays[vp],
+                       vpatchlists->vpatch_doff[vp]);
+
+            prev = vp;
+        } else {
+            vpatchlists->vpatch_next[prev] = vpatchlists->vpatch_next[vp];
+        }
+    }
 }
 
 static const uint8_t *row_source_for_display(int y)
@@ -204,37 +588,218 @@ static const uint8_t *row_source_for_display(int y)
     }
 }
 
+#ifndef PICOCALC_PROFILE
+#define PICOCALC_PROFILE 1
+#endif
+
+#if PICOCALC_PROFILE
+typedef struct {
+    uint32_t frames;
+    uint64_t palette_us;
+    uint64_t overlay_prep_us;
+    uint64_t base_us;
+    uint64_t overlay_us;
+    uint64_t submit_us;
+    uint64_t end_us;
+    uint64_t total_us;
+} picocalc_present_prof_t;
+
+static picocalc_present_prof_t pc_present_prof;
+
+static void pc_present_prof_add(uint32_t palette_us,
+                                uint32_t overlay_prep_us,
+                                uint32_t base_us,
+                                uint32_t overlay_us,
+                                uint32_t submit_us,
+                                uint32_t end_us,
+                                uint32_t total_us,
+                                uint8_t raw_video_type,
+                                uint8_t shown_video_type)
+{
+    pc_present_prof.frames++;
+    pc_present_prof.palette_us += palette_us;
+    pc_present_prof.overlay_prep_us += overlay_prep_us;
+    pc_present_prof.base_us += base_us;
+    pc_present_prof.overlay_us += overlay_us;
+    pc_present_prof.submit_us += submit_us;
+    pc_present_prof.end_us += end_us;
+    pc_present_prof.total_us += total_us;
+
+    if ((pc_present_prof.frames & 63u) == 0) {
+        uint32_t n = pc_present_prof.frames;
+
+#define AVG_MS(field) \
+        (unsigned long)(((pc_present_prof.field / n) / 1000u)), \
+        (unsigned long)(((pc_present_prof.field / n) % 1000u))
+
+        printf("picocalc: presentprof n=%lu total=%lu.%03lu ms palette=%lu.%03lu prep=%lu.%03lu base=%lu.%03lu overlay=%lu.%03lu submit=%lu.%03lu end=%lu.%03lu raw=%u shown=%u\r\n",
+               (unsigned long)n,
+               AVG_MS(total_us),
+               AVG_MS(palette_us),
+               AVG_MS(overlay_prep_us),
+               AVG_MS(base_us),
+               AVG_MS(overlay_us),
+               AVG_MS(submit_us),
+               AVG_MS(end_us),
+               raw_video_type,
+               shown_video_type);
+
+#undef AVG_MS
+
+        memset(&pc_present_prof, 0, sizeof(pc_present_prof));
+    }
+}
+#endif
+
 static void present_display_frame(void)
 {
-    static uint32_t frames_presented = 0;
+#if PICOCALC_PROFILE
+    uint32_t t0 = time_us_32();
+#endif
 
     update_palette_if_needed();
+
+#if PICOCALC_PROFILE
+    uint32_t t1 = time_us_32();
+#endif
+
+    prepare_overlays_for_display_frame();
+
+#if PICOCALC_PROFILE
+    uint32_t t2 = time_us_32();
+    uint32_t base_us = 0;
+    uint32_t overlay_us = 0;
+    uint32_t submit_us = 0;
+#endif
 
     picocalc_display_begin_frame();
 
     for (int y = 0; y < SCREENHEIGHT; y++) {
+        uint16_t *row = picocalc_display_acquire_row_buffer(y);
+
+        if (!row) {
+            continue;
+        }
+
         const uint8_t *src = row_source_for_display(y);
+
+#if PICOCALC_PROFILE
+        uint32_t rb0 = time_us_32();
+#endif
 
         if (src) {
             for (int x = 0; x < SCREENWIDTH; x++) {
-                row565[x] = palette565[src[x]];
+                row[x] = palette565[src[x]];
             }
         } else {
-            memset(row565, 0, sizeof(row565));
+            memset(row, 0, PICOCALC_LCD_W * sizeof(uint16_t));
         }
 
-        picocalc_display_write_doom_row(y, row565);
+#if PICOCALC_PROFILE
+        uint32_t rb1 = time_us_32();
+        base_us += rb1 - rb0;
+#endif
+
+        draw_overlays_on_row(row, y);
+
+#if PICOCALC_PROFILE
+        uint32_t ro1 = time_us_32();
+        overlay_us += ro1 - rb1;
+#endif
+
+        picocalc_display_submit_row_buffer(y, row);
+
+#if PICOCALC_PROFILE
+        uint32_t rs1 = time_us_32();
+        submit_us += rs1 - ro1;
+#endif
     }
+
+#if PICOCALC_PROFILE
+    uint32_t t3 = time_us_32();
+#endif
 
     picocalc_display_end_frame();
 
-    frames_presented++;
-    if ((frames_presented & 31u) == 0) {
-        printf("picocalc: presented %lu frames type=%u frame=%u\r\n",
-               (unsigned long)frames_presented,
-               display_video_type,
-               display_frame_index);
+#if PICOCALC_PROFILE
+    uint32_t t4 = time_us_32();
+
+    pc_present_prof_add(t1 - t0,
+                        t2 - t1,
+                        base_us,
+                        overlay_us,
+                        submit_us,
+                        t4 - t3,
+                        t4 - t0,
+                        next_video_type,
+                        display_video_type);
+#endif
+}
+
+static void picocalc_fps_tick(uint32_t frames_presented,
+                              uint8_t raw_video_type,
+                              uint8_t shown_video_type,
+                              uint8_t frame_index)
+{
+    static uint32_t window_start_us = 0;
+    static uint32_t window_start_frame = 0;
+    static uint32_t last_frame_us = 0;
+    static uint32_t min_frame_us = 0xffffffffu;
+    static uint32_t max_frame_us = 0;
+
+    uint32_t now_us = time_us_32();
+
+    if (window_start_us == 0) {
+        window_start_us = now_us;
+        window_start_frame = frames_presented;
+        last_frame_us = now_us;
+        return;
     }
+
+    uint32_t frame_us = now_us - last_frame_us;
+    last_frame_us = now_us;
+
+    if (frame_us < min_frame_us) {
+        min_frame_us = frame_us;
+    }
+
+    if (frame_us > max_frame_us) {
+        max_frame_us = frame_us;
+    }
+
+    uint32_t elapsed_us = now_us - window_start_us;
+
+    // Report about every 5 seconds.
+    if (elapsed_us < 5000000u) {
+        return;
+    }
+
+    uint32_t frames = frames_presented - window_start_frame;
+
+    if (frames == 0) {
+        return;
+    }
+
+    uint32_t fps_x10 = (uint32_t)(((uint64_t)frames * 10000000ull + elapsed_us / 2u) / elapsed_us);
+    uint32_t avg_us = elapsed_us / frames;
+
+    printf("picocalc: fps=%lu.%lu avg=%lu.%03lu ms min=%lu.%03lu max=%lu.%03lu raw=%u shown=%u frame=%u\r\n",
+           (unsigned long)(fps_x10 / 10u),
+           (unsigned long)(fps_x10 % 10u),
+           (unsigned long)(avg_us / 1000u),
+           (unsigned long)(avg_us % 1000u),
+           (unsigned long)(min_frame_us / 1000u),
+           (unsigned long)(min_frame_us % 1000u),
+           (unsigned long)(max_frame_us / 1000u),
+           (unsigned long)(max_frame_us % 1000u),
+           raw_video_type,
+           shown_video_type,
+           frame_index);
+
+    window_start_us = now_us;
+    window_start_frame = frames_presented;
+    min_frame_us = 0xffffffffu;
+    max_frame_us = 0;
 }
 
 static bool consume_render_frame_if_ready(void)
@@ -245,31 +810,65 @@ static bool consume_render_frame_if_ready(void)
 
     sem_acquire_blocking(&render_frame_ready);
 
+    const uint8_t raw_video_type = next_video_type;
+
     display_video_type = next_video_type;
     display_frame_index = next_frame_index;
     display_overlay_index = next_overlay_index;
     (void)display_overlay_index;
 
+    if (display_video_type == VIDEO_TYPE_WIPE) {
+        display_video_type = VIDEO_TYPE_SINGLE;
+    }
+
     static uint32_t frames_presented = 0;
 
     if (frames_presented == 0) {
-        printf("picocalc: first render frame ready type=%u frame=%u\r\n",
+        printf("picocalc: first render frame ready raw=%u shown=%u frame=%u\r\n",
+               raw_video_type,
                display_video_type,
                display_frame_index);
+    }
+
+    bool released_display_frame = false;
+
+    // Critical optimization:
+    // For normal gameplay, once core1 has latched the new display frame index,
+    // the other framebuffer is free for core0 to render into. Do not wait for
+    // the entire LCD present to finish.
+    if (raw_video_type == VIDEO_TYPE_DOUBLE && display_video_type == VIDEO_TYPE_DOUBLE) {
+        sem_release(&display_frame_freed);
+        released_display_frame = true;
+
+        static bool printed_early_release;
+        if (!printed_early_release) {
+            printed_early_release = true;
+            printf("picocalc: early display_frame_freed for VIDEO_TYPE_DOUBLE\r\n");
+        }
     }
 
     present_display_frame();
 
-    frames_presented++;
-
-    if ((frames_presented & 31u) == 0) {
-        printf("picocalc: presented %lu frames type=%u frame=%u\r\n",
-               (unsigned long)frames_presented,
-               display_video_type,
-               display_frame_index);
+    if (raw_video_type == VIDEO_TYPE_WIPE) {
+        wipe_min = 200;
     }
 
-    sem_release(&display_frame_freed);
+    frames_presented++;
+
+    picocalc_fps_tick(frames_presented,
+                      raw_video_type,
+                      display_video_type,
+                      display_frame_index);
+
+    if (frames_presented == 1) {
+        printf("picocalc: first present returned\r\n");
+    }
+
+    // For wipe/single/saving frames, keep the conservative behavior.
+    // Those paths may reference both frame buffers or transition state.
+    if (!released_display_frame) {
+        sem_release(&display_frame_freed);
+    }
 
     return true;
 }
@@ -278,18 +877,20 @@ static void core1(void)
 {
     printf("picocalc: core1 start\r\n");
 
-    picocalc_display_init();
-
-    printf("picocalc: display init returned\r\n");
-
     sem_release(&core1_launch);
 
     while (true) {
-        if (!consume_render_frame_if_ready()) {
-            pd_core1_loop_timeout_ms(1);
+        // Highest priority: if core0 finished a frame, present it and
+        // release display_frame_freed before accepting the next render wake.
+        if (consume_render_frame_if_ready()) {
+            continue;
         }
 
-        consume_render_frame_if_ready();
+        // Do not block here. If we block waiting for core1_wake, we can miss
+        // a pending render_frame_ready and recreate the display/render deadlock.
+        if (pd_core1_loop_timeout_ms(0)) {
+            continue;
+        }
 
         tight_loop_contents();
     }
@@ -306,6 +907,9 @@ void I_InitGraphics(void)
     sem_init(&core1_launch, 0, 1);
 
     pd_init();
+
+    picocalc_display_init();
+    printf("picocalc: display init returned\r\n");
 
     multicore_launch_core1(core1);
     sem_acquire_blocking(&core1_launch);
@@ -337,6 +941,9 @@ void I_SetPaletteNum(int doompalette)
 
 void I_FinishUpdate(void)
 {
+    // PicoCalc hybrid mode:
+    // Core1 owns frame consumption/presentation so core0 can continue the
+    // Doom loop instead of serializing LCD transfer after every D_Display().
 }
 
 void I_BindVideoVariables(void)

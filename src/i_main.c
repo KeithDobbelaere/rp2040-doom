@@ -44,6 +44,11 @@
 #if PICO_RP2350
 #include "hardware/structs/qmi.h"
 #endif
+
+#ifndef PICOCALC_SYS_CLOCK_KHZ
+#define PICOCALC_SYS_CLOCK_KHZ 270000
+#endif
+
 //
 // D_DoomMain()
 // Not a globally visible function, just included for source reference,
@@ -75,10 +80,25 @@ int main(int argc, char **argv)
             QMI_M0_TIMING_CLKDIV_BITS | QMI_M0_TIMING_RXDELAY_BITS
     );
 #endif
+#if PICO_VIDEO_BACKEND_PICOCALC
     vreg_set_voltage(VREG_VOLTAGE_1_30);
     busy_wait_us(1000);
-    // todo pause? is this the cause of the cold start issue?
+
+    set_sys_clock_khz(PICOCALC_SYS_CLOCK_KHZ, true);
+
+    // Important: SPI uses clk_peri, not clk_sys directly.
+    // If clk_peri stays at 48 MHz, SPI tops out around 24 MHz even though
+    // clk_sys is 270 MHz.
+    clock_configure(clk_peri,
+                    0,
+                    CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
+                    PICOCALC_SYS_CLOCK_KHZ * 1000u,
+                    PICOCALC_SYS_CLOCK_KHZ * 1000u);
+#else
+    vreg_set_voltage(VREG_VOLTAGE_1_30);
+    busy_wait_us(1000);
     set_sys_clock_khz(270000, true);
+#endif
 #if !USE_PICO_NET
     // debug ?
 //    gpio_debug_pins_init();
@@ -99,7 +119,9 @@ int main(int argc, char **argv)
     uart_set_format(uart0, 8, 1, UART_PARITY_NONE);
     uart_set_fifo_enabled(uart0, false);
 
-    printf("picocalc: stdio alive\r\n");
+    printf("picocalc: clk_sys=%lu Hz clk_peri=%lu Hz\r\n",
+       (unsigned long)clock_get_hz(clk_sys),
+       (unsigned long)clock_get_hz(clk_peri));
 #endif
 
 #endif

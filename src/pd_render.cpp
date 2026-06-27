@@ -11,6 +11,9 @@
 #include "pico/sem.h"
 #include "hardware/gpio.h"
 #include "pico/divider.h"
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+#include "pico/time.h"
+#endif
 #include "image_decoder.h"
 #include <set>
 extern "C" {
@@ -34,8 +37,55 @@ extern "C" {
 #define USE_XIPCPY 0
 #if PICO_ON_DEVICE
 #define USE_CORE1_FOR_FLATS 1
-#endif
 #define USE_CORE1_FOR_REGULAR 1
+#else
+#define USE_CORE1_FOR_FLATS 0
+#define USE_CORE1_FOR_REGULAR 0
+#endif
+
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+#ifndef PICOCALC_PROFILE
+#define PICOCALC_PROFILE 1
+#endif
+
+#if PICOCALC_PROFILE
+static uint32_t pc_pd_prof_frames;
+static uint64_t pc_pd_prof_wait_display_us;
+static uint64_t pc_pd_prof_render_us;
+static uint64_t pc_pd_prof_total_us;
+
+static void pc_pd_prof_add(uint32_t wait_display_us,
+                           uint32_t render_us,
+                           uint32_t total_us,
+                           uint8_t video_type)
+{
+    pc_pd_prof_frames++;
+    pc_pd_prof_wait_display_us += wait_display_us;
+    pc_pd_prof_render_us += render_us;
+    pc_pd_prof_total_us += total_us;
+
+    if ((pc_pd_prof_frames & 127u) == 0) {
+        uint32_t n = pc_pd_prof_frames;
+
+        printf("picocalc: pdprof n=%lu wait_display=%lu.%03lu ms render=%lu.%03lu ms total=%lu.%03lu ms type=%u\r\n",
+               (unsigned long)n,
+               (unsigned long)((pc_pd_prof_wait_display_us / n) / 1000u),
+               (unsigned long)((pc_pd_prof_wait_display_us / n) % 1000u),
+               (unsigned long)((pc_pd_prof_render_us / n) / 1000u),
+               (unsigned long)((pc_pd_prof_render_us / n) % 1000u),
+               (unsigned long)((pc_pd_prof_total_us / n) / 1000u),
+               (unsigned long)((pc_pd_prof_total_us / n) % 1000u),
+               video_type);
+
+        pc_pd_prof_frames = 0;
+        pc_pd_prof_wait_display_us = 0;
+        pc_pd_prof_render_us = 0;
+        pc_pd_prof_total_us = 0;
+    }
+}
+#endif
+#endif
+
 #ifdef PICO_SPINLOCK_ID_OS2
 #define RENDER_SPIN_LOCK PICO_SPINLOCK_ID_OS2
 #else
@@ -2595,6 +2645,10 @@ static void uh_oh_discard_columns(int render_col_limit) {
 }
 void pd_end_frame(int wipe_start) {
     DEBUG_PINS_SET(start_end, 2);
+
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC && PICOCALC_PROFILE
+    uint32_t pc_pd_t0 = time_us_32();
+#endif
 #if !PICO_ON_DEVICE
 //    tex_count.record_print(textures.size());
 //    patch_count.record_print(patches.size());
@@ -2610,6 +2664,11 @@ void pd_end_frame(int wipe_start) {
     }
 //    gpio_put(22, 0);
 #endif
+
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC && PICOCALC_PROFILE
+    uint32_t pc_pd_t1 = time_us_32();
+#endif
+
     sem_acquire_blocking(&display_frame_freed);
     bool showing_help = inhelpscreens;
     static boolean was_in_help;
@@ -2959,6 +3018,28 @@ void pd_end_frame(int wipe_start) {
     printf("GS %d vt %d fi %d\n", gamestate, next_video_type, next_frame_index);
 #endif
     sem_release(&render_frame_ready);
+
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC && PICOCALC_PROFILE
+    uint32_t pc_pd_t2 = time_us_32();
+    pc_pd_prof_add(pc_pd_t1 - pc_pd_t0,
+                   pc_pd_t2 - pc_pd_t1,
+                   pc_pd_t2 - pc_pd_t0,
+                   next_video_type);
+#endif
+
+    #if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+    static uint32_t pd_end_count;
+    pd_end_count++;
+    if (pd_end_count <= 8 || ((pd_end_count & 255u) == 0)) {
+        printf("picocalc: pd_end_frame %lu type=%u frame=%u wipe_state=%d wipe_min=%u\r\n",
+            (unsigned long)pd_end_count,
+            next_video_type,
+            next_frame_index,
+            (int)wipestate,
+            wipe_min);
+    }
+    #endif
+
     DEBUG_PINS_CLR(start_end, 2);
 }
 
