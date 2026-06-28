@@ -317,6 +317,13 @@ static __aligned(4) int16_t column_heads[SCREENWIDTH * 2];
 #define fuzzy_column_heads (&column_heads[SCREENWIDTH])
 
 static void SafeUpdateSound() {
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+    // PicoCalc PWM audio uses a blocking producer->consumer handoff.
+    // Let core 0 own that path so core 1 can't deadlock frame sync while waiting on semaphores.
+    if (get_core_num()) {
+        return;
+    }
+#endif
     boolean save = false;
     if (get_core_num()) {
         save = interp_in_use;
@@ -2660,7 +2667,7 @@ void pd_end_frame(int wipe_start) {
 #if PICO_ON_DEVICE
 //    gpio_put(22, 1);
     while (!sem_available(&display_frame_freed)) {
-        I_UpdateSound();
+        SafeUpdateSound();
     }
 //    gpio_put(22, 0);
 #endif
@@ -3101,7 +3108,7 @@ static uint8_t old_video_type;
 void pd_start_save_pause(void) {
     I_PicoSoundFade(false);
     while (!sem_available(&display_frame_freed) || I_PicoSoundFading()) {
-        I_UpdateSound();
+        SafeUpdateSound();
     }
     sem_acquire_blocking(&display_frame_freed);
     old_video_type = next_video_type;
@@ -3113,7 +3120,7 @@ void pd_start_save_pause(void) {
     sem_release(&render_frame_ready);
     // need to be sure we've picked up the change
     while (!sem_available(&display_frame_freed)) {
-        I_UpdateSound();
+        SafeUpdateSound();
     }
     sem_acquire_blocking(&display_frame_freed);
 }
@@ -3123,7 +3130,7 @@ void pd_end_save_pause(void) {
     sem_release(&render_frame_ready);
     I_PicoSoundFade(true);
     while (I_PicoSoundFading()) {
-        I_UpdateSound();
+        SafeUpdateSound();
     }
 }
 

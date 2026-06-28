@@ -59,7 +59,12 @@ void D_DoomMain (void);
 
 #if PICO_ON_DEVICE
 #include "pico/binary_info.h"
+#ifdef PICO_AUDIO_I2S_DATA_PIN
 bi_decl(bi_3pins_with_names(PICO_AUDIO_I2S_DATA_PIN, "I2S DIN", PICO_AUDIO_I2S_CLOCK_PIN_BASE, "I2S BCK", PICO_AUDIO_I2S_CLOCK_PIN_BASE+1, "I2S LRCK"));
+#endif
+#ifdef PICO_AUDIO_PWM_L_PIN
+bi_decl(bi_2pins_with_names(PICO_AUDIO_PWM_L_PIN, "PWM AUDIO L", PICO_AUDIO_PWM_R_PIN, "PWM AUDIO R"));
+#endif
 #endif
 
 int main(int argc, char **argv)
@@ -129,8 +134,12 @@ int main(int argc, char **argv)
     I_Init();
 #endif
 #if USE_PICO_NET
+    // PicoCalc uses i2c1 GPIO 6/7 for the southbridge keyboard, so skip
+    // the early PicoNet init there to avoid stealing the controller.
+#if !(PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC)
     // do init early to set pulls
     piconet_init();
+#endif
 #endif
 //!
     // Print the program version and exit.

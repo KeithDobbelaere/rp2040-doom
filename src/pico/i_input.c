@@ -32,6 +32,10 @@
 #include "m_argv.h"
 #include "m_config.h"
 #include "hardware/uart.h"
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+#include "hardware/gpio.h"
+#include "hardware/i2c.h"
+#endif
 #include <stdlib.h>
 #if USB_SUPPORT
 #include "pico/binary_info.h"
@@ -505,6 +509,309 @@ static void pico_key_up(int scancode, int keysym, int modifiers) {
     }
 }
 
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+
+#define PICOCALC_KBD_I2C              i2c1
+#define PICOCALC_KBD_SDA              6
+#define PICOCALC_KBD_SCL              7
+#define PICOCALC_KBD_BAUD             100000
+#define PICOCALC_KBD_ADDR             0x1F
+#define PICOCALC_KBD_TIMEOUT_US       10000
+
+#define PICOCALC_REG_KEY              0x04
+#define PICOCALC_REG_FIFO             0x09
+
+#define PICOCALC_KEY_STATE_IDLE       0
+#define PICOCALC_KEY_STATE_PRESSED    1
+#define PICOCALC_KEY_STATE_HOLD       2
+#define PICOCALC_KEY_STATE_RELEASED   3
+
+#define PCKEY_MOD_ALT                 0xA1
+#define PCKEY_MOD_SHL                 0xA2
+#define PCKEY_MOD_SHR                 0xA3
+#define PCKEY_MOD_SYM                 0xA4
+#define PCKEY_MOD_CTRL                0xA5
+
+#define PCKEY_BACKSPACE               0x08
+#define PCKEY_TAB                     0x09
+#define PCKEY_ENTER                   0x0A
+#define PCKEY_RETURN                  0x0D
+#define PCKEY_SPACE                   0x20
+
+#define PCKEY_ESC                     0xB1
+#define PCKEY_LEFT                    0xB4
+#define PCKEY_UP                      0xB5
+#define PCKEY_DOWN                    0xB6
+#define PCKEY_RIGHT                   0xB7
+
+#define PCKEY_INSERT                  0xD1
+#define PCKEY_HOME                    0xD2
+#define PCKEY_DEL                     0xD4
+#define PCKEY_END                     0xD5
+#define PCKEY_PAGE_UP                 0xD6
+#define PCKEY_PAGE_DOWN               0xD7
+
+#define PCKEY_F1                      0x81
+#define PCKEY_F2                      0x82
+#define PCKEY_F3                      0x83
+#define PCKEY_F4                      0x84
+#define PCKEY_F5                      0x85
+#define PCKEY_F6                      0x86
+#define PCKEY_F7                      0x87
+#define PCKEY_F8                      0x88
+#define PCKEY_F9                      0x89
+#define PCKEY_F10                     0x90
+
+#ifndef PICOCALC_KEYBOARD_DEBUG
+#define PICOCALC_KEYBOARD_DEBUG       0
+#endif
+
+static bool picocalc_keyboard_initialized;
+static unsigned picocalc_keyboard_error_count;
+
+static void picocalc_keyboard_configure_bus(void)
+{
+    i2c_init(PICOCALC_KBD_I2C, PICOCALC_KBD_BAUD);
+    gpio_set_function(PICOCALC_KBD_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(PICOCALC_KBD_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(PICOCALC_KBD_SDA);
+    gpio_pull_up(PICOCALC_KBD_SCL);
+}
+
+static void picocalc_keyboard_recover_bus(void)
+{
+    i2c_deinit(PICOCALC_KBD_I2C);
+    picocalc_keyboard_configure_bus();
+}
+
+static int picocalc_i2c_write(const uint8_t *src, size_t len)
+{
+    // Refresh the divider for every transaction so the southbridge keeps
+    // the expected 100 kHz bus rate even after peripheral clock changes.
+    i2c_set_baudrate(PICOCALC_KBD_I2C, PICOCALC_KBD_BAUD);
+
+    int result = i2c_write_timeout_us(PICOCALC_KBD_I2C,
+                                      PICOCALC_KBD_ADDR,
+                                      src,
+                                      len,
+                                      false,
+                                      PICOCALC_KBD_TIMEOUT_US);
+
+    if (result == PICO_ERROR_GENERIC || result == PICO_ERROR_TIMEOUT) {
+#if PICOCALC_KEYBOARD_DEBUG
+        printf("picocalc: keyboard write error=%d count=%u\r\n",
+               result,
+               picocalc_keyboard_error_count + 1u);
+#endif
+        picocalc_keyboard_error_count++;
+        picocalc_keyboard_recover_bus();
+        return 0;
+    }
+
+    return result;
+}
+
+static int picocalc_i2c_read(uint8_t *dst, size_t len)
+{
+    // Match the write side. This is cheap and keeps the divider sane after
+    // clock/peripheral changes.
+    i2c_set_baudrate(PICOCALC_KBD_I2C, PICOCALC_KBD_BAUD);
+
+    int result = i2c_read_timeout_us(PICOCALC_KBD_I2C,
+                                     PICOCALC_KBD_ADDR,
+                                     dst,
+                                     len,
+                                     false,
+                                     PICOCALC_KBD_TIMEOUT_US);
+
+    if (result == PICO_ERROR_GENERIC || result == PICO_ERROR_TIMEOUT) {
+#if PICOCALC_KEYBOARD_DEBUG
+        printf("picocalc: keyboard read error=%d count=%u\r\n",
+               result,
+               picocalc_keyboard_error_count + 1u);
+#endif
+        picocalc_keyboard_error_count++;
+        picocalc_keyboard_recover_bus();
+        return 0;
+    }
+
+    return result;
+}
+
+static uint16_t picocalc_keyboard_read_fifo(void)
+{
+    uint8_t buffer[2];
+
+    buffer[0] = PICOCALC_REG_FIFO;
+
+    if (picocalc_i2c_write(buffer, 1) != 1) {
+        return 0;
+    }
+
+    if (picocalc_i2c_read(buffer, 2) != 2) {
+        return 0;
+    }
+
+    return ((uint16_t)buffer[0] << 8) | buffer[1];
+}
+
+static int picocalc_key_to_doom_key(uint8_t code)
+{
+    switch (code) {
+        case PCKEY_UP:        return KEY_UPARROW;
+        case PCKEY_DOWN:      return KEY_DOWNARROW;
+        case PCKEY_LEFT:      return KEY_LEFTARROW;
+        case PCKEY_RIGHT:     return KEY_RIGHTARROW;
+
+        case PCKEY_ESC:       return KEY_ESCAPE;
+        case PCKEY_ENTER:
+        case PCKEY_RETURN:    return KEY_ENTER;
+        case PCKEY_TAB:       return KEY_TAB;
+        case PCKEY_BACKSPACE: return KEY_BACKSPACE;
+        case PCKEY_SPACE:     return ' ';
+
+        case PCKEY_INSERT:    return KEY_INS;
+        case PCKEY_DEL:       return KEY_DEL;
+        case PCKEY_HOME:      return KEY_HOME;
+        case PCKEY_END:       return KEY_END;
+        case PCKEY_PAGE_UP:   return KEY_PGUP;
+        case PCKEY_PAGE_DOWN: return KEY_PGDN;
+
+        case PCKEY_F1:        return KEY_F1;
+        case PCKEY_F2:        return KEY_F2;
+        case PCKEY_F3:        return KEY_F3;
+        case PCKEY_F4:        return KEY_F4;
+        case PCKEY_F5:        return KEY_F5;
+        case PCKEY_F6:        return KEY_F6;
+        case PCKEY_F7:        return KEY_F7;
+        case PCKEY_F8:        return KEY_F8;
+        case PCKEY_F9:        return KEY_F9;
+        case PCKEY_F10:       return KEY_F10;
+
+        // Doom defaults:
+        // Ctrl = fire, Shift = run, Alt = strafe.
+        case PCKEY_MOD_CTRL:  return KEY_RCTRL;
+        case PCKEY_MOD_SHL:
+        case PCKEY_MOD_SHR:   return KEY_RSHIFT;
+        case PCKEY_MOD_ALT:
+        case PCKEY_MOD_SYM:   return KEY_RALT;
+
+        default:
+            break;
+    }
+
+    // PicoCalc sends normal printable keys as ASCII. Doom expects lowercase
+    // letters for normal gameplay/config bindings.
+    if (code >= 'A' && code <= 'Z') {
+        return code - 'A' + 'a';
+    }
+
+    if (code >= 32 && code <= 126) {
+        return code;
+    }
+
+    return 0;
+}
+
+static int picocalc_key_to_typed_char(uint8_t code, int doom_key)
+{
+    if (doom_key >= 32 && doom_key <= 126) {
+        return doom_key;
+    }
+
+    if (code >= 32 && code <= 126) {
+        return code;
+    }
+
+    return 0;
+}
+
+static void picocalc_post_key(uint8_t code, bool pressed)
+{
+    int doom_key = picocalc_key_to_doom_key(code);
+
+    if (doom_key == 0) {
+        return;
+    }
+
+    event_t event;
+    event.type = pressed ? ev_keydown : ev_keyup;
+    event.data1 = doom_key;
+    event.data2 = pressed ? doom_key : 0;
+    event.data3 = pressed ? picocalc_key_to_typed_char(code, doom_key) : 0;
+
+    D_PostEvent(&event);
+
+#if PICOCALC_KEYBOARD_DEBUG
+    printf("picocalc: key %s code=0x%02x doom=0x%02x typed=0x%02x\r\n",
+           pressed ? "down" : "up",
+           code,
+           doom_key,
+           event.data3);
+#endif
+}
+
+static void picocalc_keyboard_init(void)
+{
+    if (picocalc_keyboard_initialized) {
+        return;
+    }
+
+    picocalc_keyboard_configure_bus();
+
+    picocalc_keyboard_initialized = true;
+    picocalc_keyboard_error_count = 0;
+
+    printf("picocalc: keyboard init i2c1 sda=%u scl=%u baud=%u\r\n",
+           PICOCALC_KBD_SDA,
+           PICOCALC_KBD_SCL,
+           PICOCALC_KBD_BAUD);
+}
+
+static void picocalc_keyboard_poll(void)
+{
+    if (!picocalc_keyboard_initialized) {
+        return;
+    }
+
+    for (int i = 0; i < 64; i++) {
+        uint16_t ev = picocalc_keyboard_read_fifo();
+
+        uint8_t state = (uint8_t)(ev >> 8);
+        uint8_t code  = (uint8_t)(ev & 0xff);
+
+        if (state == PICOCALC_KEY_STATE_IDLE) {
+            break;
+        }
+
+#if PICOCALC_KEYBOARD_DEBUG
+        printf("picocalc: keyboard fifo state=%u code=0x%02x\r\n",
+               state,
+               code);
+#endif
+
+        switch (state) {
+            case PICOCALC_KEY_STATE_PRESSED:
+                picocalc_post_key(code, true);
+                break;
+
+            case PICOCALC_KEY_STATE_HOLD:
+                // Keep the key logically down. For Doom event posting,
+                // we do not need to spam repeated keydown events.
+                break;
+
+            case PICOCALC_KEY_STATE_RELEASED:
+                picocalc_post_key(code, false);
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
+#endif
+
 #if PICO_NO_HARDWARE
 static void pico_quit(void) {
     exit(0);
@@ -516,6 +823,8 @@ void I_InputInit(void) {
     platform_key_down = pico_key_down;
     platform_key_up = pico_key_up;
     platform_quit = pico_quit;
+#elif PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+    picocalc_keyboard_init();
 #elif USB_SUPPORT
     tusb_init();
     irq_set_priority(USBCTRL_IRQ, 0xc0);
@@ -530,6 +839,10 @@ void I_GetEvent() {
 }
 
 void I_GetEventTimeout(int key_timeout) {
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+    picocalc_keyboard_poll();
+#endif
+
 #if PICO_ON_DEVICE && !NO_USE_UART
     if (uart_is_readable(uart_default)) {
         char c = uart_getc(uart_default);

@@ -32,9 +32,21 @@
 
 #include "doomtype.h"
 #include "i_picosound.h"
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+#include "pico/audio_pwm.h"
+#else
 #include "pico/audio_i2s.h"
+#endif
 #include "pico/binary_info.h"
+#include "hardware/clocks.h"
 #include "hardware/gpio.h"
+#include "hardware/pio.h"
+
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+#define PICOCALC_PWM_AUDIO_MONO 1
+#else
+#define PICOCALC_PWM_AUDIO_MONO 0
+#endif
 
 #define ADPCM_BLOCK_SIZE 128
 #define ADPCM_SAMPLES_PER_BLOCK_SIZE 249
@@ -67,15 +79,73 @@ struct channel_s
 
 static struct audio_buffer_pool *producer_pool;
 
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+#if PICO_AUDIO_PWM_PIO == 0
+#define PICOCALC_AUDIO_PWM_PIO_INST pio0
+#else
+#define PICOCALC_AUDIO_PWM_PIO_INST pio1
+#endif
+#define PICOCALC_AUDIO_PWM_CARRIER_HZ 350364u
+#define PICOCALC_AUDIO_PWM_CYCLES_PER_SAMPLE 16u
+
+static void PicocalcConfigurePwmClock(uint sm)
+{
+    // pico_audio_pwm assumes a fixed internal PIO clock; set an explicit divider
+    // so the audible sample rate stays stable when PicoCalc runs at 270 MHz.
+    const uint32_t sys_hz = clock_get_hz(clk_sys);
+    const uint32_t target_sm_hz =
+            PICOCALC_AUDIO_PWM_CARRIER_HZ * 136u * PICOCALC_AUDIO_PWM_CYCLES_PER_SAMPLE;
+
+    // PIO divider is div_int + div_frac8 / 256.
+    // Compute round(sys_hz * 256 / target_sm_hz) without float.
+    uint32_t div256 = (uint32_t)((((uint64_t)sys_hz << 8u) + target_sm_hz / 2u)
+                                 / target_sm_hz);
+
+    if (div256 < 256u) {
+        div256 = 256u;
+    }
+
+    uint16_t div_int = (uint16_t)(div256 >> 8u);
+    uint8_t div_frac8 = (uint8_t)(div256 & 0xffu);
+
+    pio_sm_set_clkdiv_int_frac(PICOCALC_AUDIO_PWM_PIO_INST,
+                               sm,
+                               div_int,
+                               div_frac8);
+
+    {
+        const uint32_t actual_sm_hz =
+                (uint32_t)(((uint64_t)sys_hz << 8u) / div256);
+
+        const uint32_t actual_sample_hz =
+                actual_sm_hz / (136u * PICOCALC_AUDIO_PWM_CYCLES_PER_SAMPLE);
+
+        printf("picocalc: audio pwm clkdiv=%u.%03u sm=%u sample=%lu\r\n",
+               (unsigned)div_int,
+               (unsigned)((div_frac8 * 1000u) / 256u),
+               (unsigned)sm,
+               (unsigned long)actual_sample_hz);
+    }
+}
+#endif
+
 static struct audio_format audio_format = {
         .format = AUDIO_BUFFER_FORMAT_PCM_S16,
         .sample_freq = PICO_SOUND_SAMPLE_FREQ,
+#if PICOCALC_PWM_AUDIO_MONO
+        .channel_count = 1,
+#else
         .channel_count = 2,
+#endif
 };
 
 static struct audio_buffer_format producer_format = {
         .format = &audio_format,
+#if PICOCALC_PWM_AUDIO_MONO
+        .sample_stride = 2
+#else
         .sample_stride = 4
+#endif
 };
 
 // ====== FROM ADPCM-LIB =====
@@ -231,7 +301,22 @@ static boolean init_channel_for_sfx(channel_t *ch, const sfxinfo_t *sfxinfo, int
     if (pitch == NORM_PITCH)
         ch->step = sample_freq * 65536 / PICO_SOUND_SAMPLE_FREQ;
     else
-        ch->step = (uint32_t)((sample_freq * pitch) * 65536ull / (PICO_SOUND_SAMPLE_FREQ * pitch));
+        // Match Chocolate Doom's pitch-shift approximation for cached sounds.
+        ch->step = (uint32_t)(((uint64_t)sample_freq * NORM_PITCH * 65536ull)
+                              / ((uint64_t)PICO_SOUND_SAMPLE_FREQ * (2 * NORM_PITCH - pitch)));
+
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+    {
+        static boolean printed_sfx_rate;
+        if (!printed_sfx_rate) {
+            printed_sfx_rate = true;
+            printf("picocalc: first sfx rate=%lu pitch=%d step=%lu\r\n",
+                   (unsigned long)sample_freq,
+                   pitch,
+                   (unsigned long)ch->step);
+        }
+    }
+#endif
 
     decompress_buffer(ch); // we need non-zero decompressed size if playing
     ch->offset = 0;
@@ -331,11 +416,29 @@ static void I_Pico_UpdateSound(void)
 {
     if (!sound_initialized) return;
 
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+    static boolean printed_update_enter;
+    static boolean printed_update_have_buffer;
+    static boolean printed_update_give;
+    static boolean printed_update_done;
+    if (!printed_update_enter) {
+        printed_update_enter = true;
+        printf("picocalc: I_Pico_UpdateSound enter\r\n");
+    }
+#endif
+
     // todo note this is called from D_Main around the game loop, which is fast enough now but may not be.
     //  we can either poll more frequently, or use IRQ but then we have to be careful with threading (both OPL and channels)
     // todo hopefully at least we can run the AI fast enough.
     audio_buffer_t *buffer = take_audio_buffer(producer_pool, false);
     if (buffer) {
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+        if (!printed_update_have_buffer) {
+            printed_update_have_buffer = true;
+            printf("picocalc: I_Pico_UpdateSound got producer buffer max=%lu\r\n",
+                   (unsigned long)buffer->max_sample_count);
+        }
+#endif
         if (music_generator) {
             // todo think about volume; this already has a (<< 3) in it
             music_generator(buffer);
@@ -346,8 +449,12 @@ static void I_Pico_UpdateSound(void)
             if (is_channel_playing(ch)) {
                 channel_t *channel = &channels[ch];
                 assert(channel->decompressed_size);
+#if PICOCALC_PWM_AUDIO_MONO
+                int volm = (channel->left + channel->right) / 4;
+#else
                 int voll = channel->left/2;
                 int volr = channel->right/2;
+#endif
                 uint offset_end = channel->decompressed_size * 65536;
                 assert(channel->offset < offset_end);
                 int16_t *samples = (int16_t *)buffer->buffer->bytes;
@@ -364,8 +471,12 @@ static void I_Pico_UpdateSound(void)
                     //  of the world anyway, we could do this across all channels at once)
                     sample = (beta256 * sample + alpha256 * channel->decompressed[channel->offset >> 16]) / 256;
 #endif
+#if PICOCALC_PWM_AUDIO_MONO
+                    *samples++ += sample * volm;
+#else
                     *samples++ += sample * voll;
                     *samples++ += sample * volr;
+#endif
                     channel->offset += channel->step;
                     if (channel->offset >= offset_end) {
                         channel->offset -= offset_end;
@@ -385,15 +496,15 @@ static void I_Pico_UpdateSound(void)
         } else if (fade_state != FS_NONE) {
             int16_t *samples = (int16_t *)buffer->buffer->bytes;
             int fade_step = fade_state == FS_FADE_IN ? FADE_STEP : -FADE_STEP;
+            const uint32_t sample_words = buffer->sample_count * audio_format.channel_count;
             int i;
-            for(i=0;i<buffer->sample_count * 2 && fade_level;i+=2) {
+            for(i=0;i<(int)sample_words && fade_level;i++) {
                 samples[i] = (samples[i] * (int)fade_level) >> 16;
-                samples[i+1] = (samples[i+1] * (int)fade_level) >> 16;
                 fade_level += fade_step;
             }
             if (!fade_level) {
                 if (fade_state == FS_FADE_OUT) {
-                    for(;i<buffer->sample_count * 2;i++) {
+                    for(;i<(int)sample_words;i++) {
                         samples[i] = 0;
                     }
                     fade_state = FS_SILENT;
@@ -402,7 +513,20 @@ static void I_Pico_UpdateSound(void)
                 }
             }
         }
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+        if (!printed_update_give) {
+            printed_update_give = true;
+            printf("picocalc: I_Pico_UpdateSound giving sample_count=%lu\r\n",
+                   (unsigned long)buffer->sample_count);
+        }
+#endif
         give_audio_buffer(producer_pool, buffer);
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+        if (!printed_update_done) {
+            printed_update_done = true;
+            printf("picocalc: I_Pico_UpdateSound returned from give\r\n");
+        }
+#endif
     }
 }
 
@@ -417,12 +541,43 @@ static void I_Pico_ShutdownSound(void)
 
 static boolean I_Pico_InitSound(boolean _use_sfx_prefix)
 {
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC && PICOCALC_DISABLE_AUDIO
+    (void)_use_sfx_prefix;
+    return false;
+#else
     int i;
     use_sfx_prefix = _use_sfx_prefix;
 
+    // Match the PicoCalc PWM producer chunk size to the PWM backend's consumer buffer length.
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+    producer_pool = audio_new_producer_pool(&producer_format, 2, PICO_AUDIO_PWM_BUFFER_SAMPLE_LENGTH);
+#else
     // todo this will likely need adjustment - maybe with IRQs/double buffer & pull from audio we can make it quite small
     producer_pool = audio_new_producer_pool(&producer_format, 2, 1024); // todo correct size
+#endif
 
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+    audio_pwm_channel_config_t mono_config = default_mono_channel_config;
+    mono_config.core.base_pin = PICO_AUDIO_PWM_MONO_PIN;
+
+    printf("picocalc: audio pwm init mono pin=%d rate=%d\r\n",
+           mono_config.core.base_pin,
+           (int)PICO_SOUND_SAMPLE_FREQ);
+
+    const struct audio_format *output_format;
+    output_format = audio_pwm_setup(&audio_format, -1, &mono_config);
+    if (!output_format) {
+        panic("PicoAudio: Unable to open PWM audio device.\n");
+    }
+
+    PicocalcConfigurePwmClock(mono_config.core.pio_sm);
+
+    bool ok = audio_pwm_default_connect(producer_pool, false);
+    assert(ok);
+    printf("picocalc: audio pwm connected\r\n");
+    audio_pwm_set_enabled(true);
+    printf("picocalc: audio pwm enabled\r\n");
+#else
     struct audio_i2s_config config = {
             .data_pin = PICO_AUDIO_I2S_DATA_PIN,
             .clock_pin_base = PICO_AUDIO_I2S_CLOCK_PIN_BASE,
@@ -446,9 +601,11 @@ static boolean I_Pico_InitSound(boolean _use_sfx_prefix)
     bool ok = audio_i2s_connect_extra(producer_pool, false, 0, 0, NULL);
     assert(ok);
     audio_i2s_set_enabled(true);
+#endif
 
     sound_initialized = true;
     return true;
+#endif
 }
 
 static snddevice_t sound_pico_devices[] =

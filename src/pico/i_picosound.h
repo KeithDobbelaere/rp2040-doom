@@ -23,7 +23,9 @@
 #include "pico.h"
 typedef struct audio_buffer audio_buffer_t;
 
-#if USE_EMU8950_OPL
+#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
+#define PICO_SOUND_SAMPLE_FREQ 22058
+#elif USE_EMU8950_OPL
 #define PICO_SOUND_SAMPLE_FREQ 49716
 #else
 #define PICO_SOUND_SAMPLE_FREQ 44100

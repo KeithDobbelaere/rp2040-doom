@@ -61,6 +61,7 @@ pico_generate_pio_header(common_pico_vga ${CMAKE_CURRENT_LIST_DIR}/video_doom.pi
 
 target_link_libraries(common_pico_vga INTERFACE
         common_pico_base
+        pico_audio_i2s
         pico_scanvideo_dpi
 )
 
@@ -85,6 +86,7 @@ target_sources(common_pico_picocalc INTERFACE
 
 target_link_libraries(common_pico_picocalc INTERFACE
         common_pico_base
+        pico_audio_pwm
         hardware_spi
         hardware_dma
         hardware_gpio
@@ -92,6 +94,10 @@ target_link_libraries(common_pico_picocalc INTERFACE
 
 target_compile_definitions(common_pico_picocalc INTERFACE
         PICO_VIDEO_BACKEND_PICOCALC=1
+        PICO_AUDIO_PWM_PIO=1
+        PICO_AUDIO_PWM_L_PIN=26
+        PICO_AUDIO_PWM_R_PIN=27
+        PICO_AUDIO_PWM_MONO_PIN=26
 )
 
 add_library(pico_cd INTERFACE)
