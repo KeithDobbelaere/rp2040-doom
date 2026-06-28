@@ -491,36 +491,9 @@ void D_RunFrame()
     // frame syncronous IO operations
     I_StartFrame ();
 
-#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
-    static boolean printed_runframe_start;
-    if (!printed_runframe_start)
-    {
-        printed_runframe_start = true;
-        printf("picocalc: D_RunFrame start\r\n");
-    }
-#endif
-
     TryRunTics (); // will run at least one tic
 
-#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
-    static boolean printed_after_tics;
-    if (!printed_after_tics)
-    {
-        printed_after_tics = true;
-        printf("picocalc: D_RunFrame after TryRunTics gametic=%d\r\n", gametic);
-    }
-#endif
-
     S_UpdateSounds (players[consoleplayer].mo);// move positional sounds
-
-#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
-    static boolean printed_after_sound;
-    if (!printed_after_sound)
-    {
-        printed_after_sound = true;
-        printf("picocalc: D_RunFrame after S_UpdateSounds\r\n");
-    }
-#endif
 
     // Update display, next frame, with current state if no profiling is on
     if (screenvisible && !nodrawers)
@@ -585,23 +558,12 @@ void D_DoomLoop (void)
 #endif
     EnableLoadingDisk();
 
-#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
-    printf("picocalc: D_DoomLoop before initial TryRunTics\r\n");
-#endif
     TryRunTics();
-
-#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
-    printf("picocalc: D_DoomLoop after initial TryRunTics gametic=%d\r\n", gametic);
-#endif
 
     V_RestoreBuffer();
     R_ExecuteSetViewSize();
 
     D_StartGameLoop();
-
-#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
-    printf("picocalc: D_DoomLoop after D_StartGameLoop\r\n");
-#endif
 
     if (testcontrols)
     {
@@ -1933,7 +1895,6 @@ void D_DoomMain (void)
 
     #if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
         autostart = true;
-        printf("picocalc: autostart E%dM%d\r\n", startepisode, startmap);
     #endif
 
     //!

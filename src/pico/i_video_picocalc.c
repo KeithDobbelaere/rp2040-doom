@@ -589,7 +589,8 @@ static const uint8_t *row_source_for_display(int y)
 }
 
 #ifndef PICOCALC_PROFILE
-#define PICOCALC_PROFILE 1
+// Enable this temporarily when tuning the PicoCalc display path.
+#define PICOCALC_PROFILE 0
 #endif
 
 #if PICOCALC_PROFILE
@@ -823,13 +824,6 @@ static bool consume_render_frame_if_ready(void)
 
     static uint32_t frames_presented = 0;
 
-    if (frames_presented == 0) {
-        printf("picocalc: first render frame ready raw=%u shown=%u frame=%u\r\n",
-               raw_video_type,
-               display_video_type,
-               display_frame_index);
-    }
-
     bool released_display_frame = false;
 
     // Critical optimization:
@@ -839,12 +833,6 @@ static bool consume_render_frame_if_ready(void)
     if (raw_video_type == VIDEO_TYPE_DOUBLE && display_video_type == VIDEO_TYPE_DOUBLE) {
         sem_release(&display_frame_freed);
         released_display_frame = true;
-
-        static bool printed_early_release;
-        if (!printed_early_release) {
-            printed_early_release = true;
-            printf("picocalc: early display_frame_freed for VIDEO_TYPE_DOUBLE\r\n");
-        }
     }
 
     present_display_frame();
@@ -860,10 +848,6 @@ static bool consume_render_frame_if_ready(void)
                       display_video_type,
                       display_frame_index);
 
-    if (frames_presented == 1) {
-        printf("picocalc: first present returned\r\n");
-    }
-
     // For wipe/single/saving frames, keep the conservative behavior.
     // Those paths may reference both frame buffers or transition state.
     if (!released_display_frame) {
@@ -875,8 +859,6 @@ static bool consume_render_frame_if_ready(void)
 
 static void core1(void)
 {
-    printf("picocalc: core1 start\r\n");
-
     sem_release(&core1_launch);
 
     while (true) {
@@ -898,8 +880,6 @@ static void core1(void)
 
 void I_InitGraphics(void)
 {
-    printf("picocalc: I_InitGraphics\r\n");
-
     I_VideoBuffer = frame_buffer[0];
 
     sem_init(&render_frame_ready, 0, 2);
@@ -909,7 +889,6 @@ void I_InitGraphics(void)
     pd_init();
 
     picocalc_display_init();
-    printf("picocalc: display init returned\r\n");
 
     multicore_launch_core1(core1);
     sem_acquire_blocking(&core1_launch);

@@ -277,7 +277,7 @@ void I_InitSound(boolean use_sfx_prefix)
 
 #if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
     nomusic = true;
-    printf("picocalc: music disabled during PWM bring-up\r\n");
+    printf("picocalc: music disabled on PWM output\r\n");
 #endif
 
 #if !NO_USE_MUSIC_PACKS

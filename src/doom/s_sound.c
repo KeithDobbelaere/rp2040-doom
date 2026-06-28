@@ -589,26 +589,7 @@ void S_UpdateSounds(mobj_t *listener)
     should_be_const sfxinfo_t*        sfx;
     channel_t*        c;
 
-    static boolean printed_before_i_update;
-    static boolean printed_after_i_update;
-
-#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
-    if (!printed_before_i_update)
-    {
-        printed_before_i_update = true;
-        printf("picocalc: S_UpdateSounds before I_UpdateSound\r\n");
-    }
-#endif
-
     I_UpdateSound();
-
-#if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
-    if (!printed_after_i_update)
-    {
-        printed_after_i_update = true;
-        printf("picocalc: S_UpdateSounds after I_UpdateSound\r\n");
-    }
-#endif
 
     for (cnum=0; cnum<snd_channels; cnum++)
     {

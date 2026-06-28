@@ -45,7 +45,8 @@ extern "C" {
 
 #if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
 #ifndef PICOCALC_PROFILE
-#define PICOCALC_PROFILE 1
+// Enable this temporarily when investigating render/present timing.
+#define PICOCALC_PROFILE 0
 #endif
 
 #if PICOCALC_PROFILE
@@ -3033,19 +3034,6 @@ void pd_end_frame(int wipe_start) {
                    pc_pd_t2 - pc_pd_t0,
                    next_video_type);
 #endif
-
-    #if PICO_ON_DEVICE && PICO_VIDEO_BACKEND_PICOCALC
-    static uint32_t pd_end_count;
-    pd_end_count++;
-    if (pd_end_count <= 8 || ((pd_end_count & 255u) == 0)) {
-        printf("picocalc: pd_end_frame %lu type=%u frame=%u wipe_state=%d wipe_min=%u\r\n",
-            (unsigned long)pd_end_count,
-            next_video_type,
-            next_frame_index,
-            (int)wipestate,
-            wipe_min);
-    }
-    #endif
 
     DEBUG_PINS_CLR(start_end, 2);
 }
